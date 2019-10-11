@@ -1,192 +1,239 @@
 desc:Microrhythm MIDI Sequencer
 //tags: MIDI generator sequencing microrhythm
 
+
+// UI Elements
 slider1:60<0,127,1>Note Start
 
 // Enable MIDI-only optimizations
 in_pin:none
 out_pin:none
 
-@init
 
+@init
 // Shorthand constants
-note_on = $x90;
-note_off = $x80; // Not completely sure about this one
+/* enum */ NOTE.On = $x90;
+/* enum */ NOTE.Off = $x80; // Not completely sure about this one
 
 // Runtime variables
-list_length = 32; // Number of steps in sequencer
-num_notes = 16; // Number of channels in sequencer
-last_beat_pos = -1;
-npatterns = 16;
-mstate = -1;
-lastpreviewsel = -1;
-gfx_clear = -1;
-ext_noinit = 1;
-noteonstate = 0;
-want_preview = -1;
-want_preview_off = 0;
+/* var */ init.list_length = 32; // Number of steps in sequencer
+/* var */ init.num_notes = 16; // Number of channels in sequencer
+/* var */ init.last_beat_pos = -1;
+/* var */ init.mstate = -1;
+/* var */ init.note_on_state = 0;
+// Not sure if we need these variables. TODO: What is the preview feature?
+/* var */ init.lastpreviewsel = -1;
+/* var */ init.want_preview = 1;
+/* var */ init.want_preview_off = 0;
+
+// System variables
+/* system */ gfx_clear = -1;
+/* system */ ext_noinit = 1;
 
 
-
+// I'm pretty sure these are reassigned every time a slider changes
 @slider
-basenote = slider1 | 0;
+/* var */ slider.base_note = slider1 | 0;
+/* var */ slider.note_list = init.list_length;
 
-notelist = list_length;
 
-@serialize
-file_mem(0, 0, list_length * npatterns);
+// For storing state between sessions
+// Not sure how it works yet
+//@serialize
+//file_mem(0, 0, init.list_length);
 
+
+// MIDI Processing Thread (Run once per "block")
 @block
 
-(want_preview_off && last_preview >= 0) ? (
-  midisend(0, note_off, last_preview + basenote);
-  last_preview = -1;
+/* var */ block.curr_beat_pos = /* system */ beat_position;
+/* var */ block.curr_spl_pos = 0;
+/* var */ block.diff_beat_pos = (
+  4.0
+  * /* system */ tempo
+  / (
+    60.0
+    * /* system */ ts_denom
+    * /* system */ srate
+  )
 );
-want_preview_off = 0;
 
+/* for */ loop((
+    (/* system */ play_state & 1)
+      ? /* system */ samplesblock
+      : 1
+  ),
 
-(want_preview >= 0) ? (
-  midisend(0, note_on, want_preview + basenote + 127 * 256);
-  last_preview=want_preview;
-  want_preview=-1;
-);
-
-curbeatpos = beat_position;
-cursplpos=0;
-dbeatpos = (tempo * 4.0 / (60.0 * ts_denom * srate));
-
-
-loop( ((play_state & 1) ? samplesblock : 1), // Loop count
-
-  beatpos = (play_state & 1)
-    ? (curbeatpos * 4.0) % list_length
+  /* var */ block.beat_pos = (/* system */ play_state & 1)
+    ? (block.curr_beat_pos * 4.0) % init.list_length
     : -100;
   
-  ((beatpos != last_beat_pos) || !(play_state & 1)) ? (
-    a = (play_state & 1)
-      ? notelist[beatpos]
+  /* if */ (
+    (block.beat_pos != init.last_beat_pos)
+    || !(/* system */ play_state & 1)
+  ) ? (
+  
+    // TODO: Why the hell is this named a? What is this, algebra?
+    /* var */ block.a = (/* system */ play_state & 1)
+      ? slider.note_list[block.beat_pos]
       : 0;
-    npos = basenote;
-    noneed = noteonstate;
-    noteonstate=0;
-    while( // do while
+      
+    /* var */ block.note_pos = slider.base_note;
+    /* var */ block.noneed = init.note_on_state; // TODO: Why is it named this?
+    init.note_on_state = 0;
+    /* do */ while(
     
-      (noneed & 1) ? (
-         midisend(cursplpos, note_off, npos);
+      /* if */ (block.noneed & 1) ? (
+        midisend(block.curr_spl_pos, NOTE.Off, block.note_pos);
       );
       
-      (a & 1) ? (
-        midisend(cursplpos, note_on, npos + 127 * 256);
-        noteonstate += 2 ^ (npos - basenote);
+      /* if */ (block.a & 1) ? (
+        midisend(block.curr_spl_pos, NOTE.On, block.note_pos, 127);
+        init.note_on_state += 2 ^ (block.note_pos - slider.base_note);
       );
       
-      npos += 1;
-      noneed *= 0.5;
+      block.note_pos += 1;
+      block.noneed *= 0.5;
       
-      ((a *= 0.5) >= 1 || noneed >= 1); // do while condition
+      /* while */ ((block.a *= 0.5) >= 1 || block.noneed >= 1);
     );
-    last_beat_pos = beatpos;
+    init.last_beat_pos = block.beat_pos;
   );
-  cursplpos += 1;
-  curbeatpos += dbeatpos;
+  block.curr_spl_pos += 1;
+  block.curr_beat_pos += block.diff_beat_pos;
 );
 
-@sample
 
+// This is a MIDI-only plugin. Why was a descriptor
+// included for processing audio samples?
+//@sample
+
+
+// Graphics thread (~30fps)
 @gfx 400 300
 
-((lgfx_w != gfx_w) || (lgfx_h != gfx_h)) ? (
-  lgfx_w = gfx_w; lgfx_h = gfx_h;
-  gfx_r = gfx_g = gfx_b = gfx_x = gfx_y = 0;
-  gfx_rectto(gfx_w, gfx_h);
+function fill_background_on_resize () (
+  ((this.last_gfx_w != /* system */ gfx_w) || (this.last_gfx_h != /* system */ gfx_h)) ? (
+    /* system */ gfx_r =
+    /* system */ gfx_g =
+    /* system */ gfx_b =
+    /* system */ gfx_x =
+    /* system */ gfx_y = 0;
+    this.last_gfx_w = /* system */ gfx_w;
+    this.last_gfx_h = /* system */ gfx_h;
+    gfx_rectto(/* system */ gfx_w, /* system */ gfx_h);
+  );
 );
+fill_background_on_resize();
 
-y = num_notes - 1 - (((mouse_y / gfx_h) * num_notes ) | 0);
+y = init.num_notes - 1 - (((/* system */ mouse_y / /* system */ gfx_h) * init.num_notes) | 0);
 
-(mouse_cap&2) ? (
-  ((y != lastpreviewsel)
+(/* system */ mouse_cap & 2) ? (
+  ((y != init.lastpreviewsel)
     && (y >= 0)
-    && (y < num_notes)) ?
+    && (y < init.num_notes)) ?
   (
-    (lastpreviewsel >= 0) ? (
-      want_preview_off = 1;
+    (init.lastpreviewsel >= 0) ? (
+      init.want_preview_off = 1;
     );
-    want_preview = lastpreviewsel = y;
+    init.want_preview = init.lastpreviewsel = y;
   );
 ):(
-  want_preview_off=1;
-  lastpreviewsel=-1;
+  init.want_preview_off = 1;
+  init.lastpreviewsel = -1;
 );
 
-(mouse_cap&1) ? (
-    x = ((mouse_x/gfx_w)*list_length)|0;
-    x >= 0 && x < list_length && y >= 0 && y < num_notes? (
-      mstate<0 ? (
-        mask = 2^y;
-        nlm=(notelist[x] & mask);
-        mstate=nlm?0:1;
-        mstate==0 && nlm ? notelist[x]-=mask;
-        mstate==1 && !nlm ? notelist[x]+=mask;
+(/* system */ mouse_cap & 1) ? (
+    x = ((/* system */ mouse_x / /* system */ gfx_w) * init.list_length) | 0;
+    
+    ((x >= 0)
+      && (x < init.list_length)
+      && (y >= 0)
+      && (y < init.num_notes)
+    ) ? (
+      (init.mstate < 0) ? (
+        mask = 2 ^ y;
+        nlm = (slider.note_list[x] & mask);
+        init.mstate = nlm ? 0 : 1;
+        ((init.mstate == 0) && nlm) ? slider.note_list[x] -= mask;
+        ((init.mstate == 1) && !nlm) ? slider.note_list[x] += mask;
       ) : (
-        lcnt = max(abs(last_x-x),abs(last_y-y))|0;
-        dx = (x-last_x)/lcnt;
-        dy = (y-last_y)/lcnt;
-        lcnt >= 1 ? loop(lcnt,
+        lcnt = max(
+          abs(last_x - x),
+          abs(last_y - y)
+        ) | 0;
+        dx = (x - last_x) / lcnt;
+        dy = (y - last_y) / lcnt;
+        (lcnt >= 1) ? loop(lcnt,
            last_x += dx;
            last_y += dy;
-           mask = 2^(last_y|0);
-           nlm=(notelist[last_x|0] & mask);
-           mstate==0 && nlm ? notelist[last_x|0]-=mask;
-           mstate==1 && !nlm ? notelist[last_x|0]+=mask;
-
+           mask = 2 ^ (last_y | 0);
+           nlm = (slider.note_list[last_x | 0] & mask);
+           ((init.mstate == 0) && nlm) ? slider.note_list[last_x | 0] -= mask;
+           ((init.mstate == 1) && !nlm) ? slider.note_list[last_x | 0] += mask;
         );
       );
       last_x = x;
       last_y = y;
     );
 ) : (
-  mstate >= 0 ? sliderchange(-1);
-  mstate=-1;
+  init.mstate >= 0 ? sliderchange(-1);
+  init.mstate =- 1;
 );
 
 
-ly=0;
+ly = 0;
 
-notepos=0;
-loop(num_notes,
+notepos = 0;
+loop(init.num_notes,
 
-ty=((notepos+1)*gfx_h)/(num_notes);
-lx=0;
-xpos=0;
-mask = 2^(num_notes-1-notepos);
-cidx=(slider1&7);
-gfx_a=1;
-
-use_r=(cidx&1) ? 0.6 : 0.2;
-use_g=(cidx&2) ? 0.6 : 0.2;
-use_b=(cidx&4) ? 0.2 : 0.6;
-cidx==3  ? use_r*=2;
-cidx==4 ? use_g*=2;
-
-loop(list_length,
-  tx = ((xpos+1)*gfx_w)/list_length;
-
-  sel=(notelist[xpos]&mask);
-
-  gfx_r=use_r; gfx_g=use_g; gfx_b=use_b;
-
-  !(xpos&3) ? ( gfx_g=gfx_r; gfx_r=gfx_b; gfx_b=use_g;);
-
-  last_beat_pos == xpos ? ( gfx_r=gfx_g=gfx_b=sel?0.8:0.4; ) :
-      !sel ? (gfx_r*=0.55; gfx_g*=0.55; gfx_b*=0.55; );
-
-
-  gfx_x=lx; gfx_y=ly; gfx_rectto(tx,ty);
-
-  lx=tx+2;
-  xpos+=1;
-);
-
-ly=ty+2;
-notepos+=1;
+  ty = ((notepos + 1)* /* system */ gfx_h) / init.num_notes;
+  lx = 0;
+  xpos = 0;
+  mask = 2 ^ (init.num_notes - 1 - notepos);
+  cidx = (/* system */ slider1 & 7);
+  /* system */ gfx_a = 1;
+  
+  use_r = (cidx & 1) ? 0.6 : 0.2;
+  use_g = (cidx & 2) ? 0.6 : 0.2;
+  use_b = (cidx & 4) ? 0.2 : 0.6;
+  (cidx == 3) ? use_r *= 2;
+  (cidx == 4) ? use_g *= 2;
+  
+  loop(init.list_length,
+    tx = ((xpos + 1) * /* system */ gfx_w) / init.list_length;
+  
+    sel = (slider.note_list[xpos] & mask);
+  
+    /* system */ gfx_r = use_r;
+    /* system */ gfx_g = use_g;
+    /* system */ gfx_b = use_b;
+  
+    !(xpos & 3) ? (
+      /* system */ gfx_g = /* system */ gfx_r;
+      /* system */ gfx_r = /* system */ gfx_b;
+     /* system */  gfx_b = use_g;
+    );
+  
+    (init.last_beat_pos == xpos) ? (
+      /* system */ gfx_r =
+      /* system */ gfx_g =
+      /* system */ gfx_b = sel ? 0.8 : 0.4;
+    ) : !sel ? (
+      /* system */ gfx_r *= 0.55;
+      /* system */ gfx_g *= 0.55;
+      /* system */ gfx_b *= 0.55;
+    );
+  
+  
+    /* system */ gfx_x = lx;
+    /* system */ gfx_y = ly;
+    gfx_rectto(tx, ty);
+  
+    lx = tx + 2;
+    xpos += 1;
+  );
+  
+  ly = ty + 2;
+  notepos += 1;
 );
